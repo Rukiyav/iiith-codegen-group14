@@ -1,0 +1,16 @@
+torch
+transformers
+datasets
+sentencepiece
+accelerate
+fastapi
+uvicorn
+streamlit
+httpx
+requests
+pandas
+rouge-score
+sacrebleu
+bert-score
+pytest
+peft
