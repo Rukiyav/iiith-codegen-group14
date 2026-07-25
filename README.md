@@ -1,157 +1,93 @@
-# CodeGen Group14 — AIML B26 Capstone
+# CodeGen Group14 — AIML B26 Capstone (Ultra-Lean Architecture)
 
-Three capabilities through **Checkpoint 2**:
+Unified 5-file AI engine for **NL → Python**, **code → documentation (ROUGE-1/2/L)**, **PL1 → PL2 translation**, **Project RAG**, and **Agentic Self-Correction**.
 
-1. **Text → Python code** (MBPP, CodeGen-350M-multi, pass@1)
-2. **Code → Documentation** (CoDocBench, **ROUGE-L** primary)
-3. **Agentic self-correction** (generate → test → retry)
+---
 
-**Out of scope until CP3:** VS Code extension, RAG, SQL generation.
+## 🚀 Capabilities & Features
 
-## Research papers (literature review)
+| Capability | Model / Technique | Metric |
+|------------|-------------------|--------|
+| **NL → Python** | Baseline / LoRA / RAG / **Agentic** | pass@1, pass@k (MBPP, HumanEval+) |
+| **Code → Docs** | AST-Grounded + Zero-shot DocGen | **ROUGE-1/2/L**, BLEU, BERTScore |
+| **PL1 → PL2** | CodeGen-350M-multi AST Translate | Idiomatic translation across 7 PLs |
+| **Agentic Repair** | Sandbox exec + Reflection + Repair | retry_success_rate, pass@k |
+| **Project RAG** | FAISS + SentenceTransformers over project folder | Context precision & pass@k |
 
-Three papers are in the repo; they inform the **proposal and later checkpoints**, but are **not yet wired into the running code**:
+Default base model: **CodeGen-350M-multi** (`Salesforce/codegen-350M-multi`).
 
-| Paper | Relevance | Used in code today? |
-|-------|-----------|---------------------|
-| **SERA** — Soft-Verified Efficient Repository Agents | Agentic self-correction, repository specialization, synthetic trajectories | Partially — we implement generate→test→retry; not SERA’s SVG training pipeline |
-| **Scaling Laws for Code** — Every Programming Language Matters | Multi-language / PL1→PL2 translation stretch | No — deferred to optional CP2+ stretch |
-| **Bridging the Gap… Text-to-NoSQL** | SQL/NoSQL generation track | No — removed from scope per mentor focus |
+---
 
-Implementation follows the **capstone PDF** + **group proposal**: MBPP, CoDocBench, CodeGen-350M-multi, pass@1, ROUGE-L, agent loop. RAG (proposal Module 4) is CP3.
+## 📁 Ultra-Lean 5-File Repository Architecture
 
-## Model selection
-
-Default upstream model: **CodeGen-350M-multi** (`codegen-350m`).
-
-Fine-tuned checkpoints under `experiments/checkpoints/` appear in the Streamlit sidebar and `GET /models`.
-
-```bash
-curl http://127.0.0.1:8000/models
-python src/infer.py "Write factorial in Python" --model_name_or_path codegen-350m
-python src/infer.py "Write factorial" --model_name_or_path experiments/checkpoints/codegen-mbpp-full
+```
+iiith-codegen-group14/
+│
+├── src/                        # Core Engine Library
+│   ├── config.py               # (1) Central hyperparameters & directory paths
+│   ├── engine.py               # (2) Unified AI engine (Models, RAG, Sandbox, Prompts, Agent, Docs, Translate)
+│   └── eval.py                 # (3) Evaluation metrics (MBPP, EvalPlus, ROUGE-1/2/L, BLEU, pass@k)
+│
+├── app.py                      # (4) Unified FastAPI REST server & Streamlit Web UI
+├── train.py                    # (5) Data downloader, SFT dataset builder, and LoRA training script
+│
+├── tests/                      # Automated Test Suite
+│   └── test_all.py             # Pytest suite covering all 5 capabilities
+│
+├── docs/                       # Project Documentation & Research Papers
+├── capstone_colab.ipynb        # Course Demonstration Notebook
+└── README.md                   # Project Overview
 ```
 
-## Quickstart
+---
 
+## ⚡ Quickstart
+
+### 1. Installation
 ```bash
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-python data/scripts/download_and_preprocess.py
 ```
 
-## Checkpoint 1 (subset training + baseline eval)
-
-Deliverable: working pipeline, subset fine-tune, eval harness, API/UI.
-
+### 2. Run Tests
 ```bash
-chmod +x scripts/train_cp1.sh
-bash scripts/train_cp1.sh
+pytest tests/test_all.py
 ```
 
-This runs:
-
-- Upstream baseline on MBPP test + CoDocBench test (50 doc samples)
-- Subset training (`128` MBPP / `200` CoDocBench examples, 1 epoch)
-- Post-train eval → `experiments/results/cp1_*.json`
-- Summary table via `experiments/summarize_results.py`
-
-## Checkpoint 2 (full training + comparison)
-
-Deliverable: full MBPP + CoDocBench fine-tune, pass@1 / ROUGE-L comparison, agent lift.
-
+### 3. Fine-Tune LoRA Model
 ```bash
-chmod +x scripts/train_cp2.sh scripts/run_cp2_eval.sh
-bash scripts/train_cp2.sh
+python train.py
 ```
 
-Full training uses `--full` (entire train splits, 2 epochs, `load_best_model_at_end`).
-Eval writes `experiments/results/cp2_*.json` including **baseline vs agent** on code.
-
-**Re-eval only** (checkpoints already trained):
-
+### 4. Run Benchmark Evaluations
 ```bash
-# default: 43 MBPP + 100 CoDocBench test samples (override with env vars)
-bash scripts/run_cp2_eval.sh
-
-# full MBPP test (500 tasks — slow on CPU)
-MAX_CODE_SAMPLES=500 MAX_DOC_SAMPLES=500 bash scripts/run_cp2_eval.sh
+python -m src.eval
 ```
 
-### Results summary
+---
 
+## 💻 Running the API and Web UI
+
+### Launch REST API Server
 ```bash
-python experiments/summarize_results.py experiments/results/cp2_*.json
+uvicorn app:app --port 8000 --reload
+```
+* Interactive API Documentation: `http://localhost:8000/docs`
+
+### Launch Streamlit Web UI
+```bash
+streamlit run app.py
 ```
 
-| Metric | Task | Meaning |
+---
+
+## 🔌 REST API Endpoints
+
+| Method | Path | Purpose |
 |--------|------|---------|
-| **pass@1** | Code | Execution accuracy on MBPP tests |
-| **ROUGE-L** | Docs | Primary doc quality (mentor requirement) |
-| **retry_success_rate** | Code + agent | Share fixed after initial failure |
-
-## Manual evaluation
-
-```bash
-# Code baseline
-python -m src.eval.run_eval --task code --model Salesforce/codegen-350M-multi --split test
-
-# Code with agentic self-correction
-python -m src.eval.run_eval --task code --model experiments/checkpoints/codegen-mbpp-full --split test --agent
-
-# Documentation (ROUGE-L primary)
-python -m src.eval.run_eval --task docs --model experiments/checkpoints/codegen-doc-full --split test
-```
-
-Use `--max_samples N` for quick smoke runs; omit for full split.
-
-## API + UI
-
-```bash
-uvicorn app.main:app --reload --port 8000
-streamlit run ui/app.py
-```
-
-| Tab | Pipeline |
-|-----|----------|
-| **Text → Code** | Generate → optional test execution → agent retries |
-| **Code → Documentation** | Generate → optional ROUGE-L/BLEU vs reference |
-| **Benchmark** | Batch eval on MBPP / CoDocBench splits (for reports) |
-
-Single-prompt generation and validation are one flow. **Benchmark** is for dataset-scale eval only.
-
-## Agent workflow
-
-```
-Prompt → Generate code → Run unit tests → Pass? → Done
-                              ↓ fail
-                         Retry with failure context (max N)
-```
-
-API: `POST /generate/code` with optional `test_list`, `use_agent`, `max_retries`.
-
-## Layout
-
-```
-src/data/         mbpp.py, codoc.py
-src/agent/        code_agent.py
-src/eval/         code_eval, doc_eval, run_eval (--agent)
-src/train.py      MBPP fine-tuning (--full for CP2)
-src/train_doc.py  CoDocBench fine-tuning (--full for CP2)
-scripts/          train_cp1.sh, train_cp2.sh, run_cp2_eval.sh
-experiments/      checkpoints/, results/, summarize_results.py
-app/              FastAPI
-ui/               Streamlit
-```
-
-## Tests
-
-```bash
-python -m pytest tests/ -q
-```
-
-## Hardware notes
-
-- **Apple Silicon:** training uses MPS when available (`src/train.py` device detection).
-- **GPU:** add `--fp16` to training commands for faster CP2 runs.
-- Generation defaults to **temperature=0.0** (deterministic) for reproducible CLI/UI parity.
+| `GET` | `/health` | Server health check |
+| `GET` | `/models` | List supported models and capabilities |
+| `POST` | `/generate/code` | Generate Python code (supports `baseline`, `lora`, `rag`, `agentic`) |
+| `POST` | `/docs/generate` | Generate Google-style docstrings from code |
+| `POST` | `/translate` | Translate code between languages (PL1 → PL2) |
+| `POST` | `/rag/index` | Index a local project directory into FAISS |
