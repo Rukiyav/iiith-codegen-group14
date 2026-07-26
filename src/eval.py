@@ -96,7 +96,13 @@ def compute_pass_at_k(all_samples: List[List[str]], test_lists: List[List[str]],
 
 
 def compute_all_metrics(preds: List[str], refs: List[str], test_lists: Optional[List[List[str]]] = None, all_samples: Optional[List[List[str]]] = None, test_imports_list: Optional[List] = None, verbose: bool = True) -> Dict:
-    metrics = {"bleu": compute_bleu(preds, refs)}
+    rouge = compute_rouge(preds, refs)
+    metrics = {
+        "rouge1": rouge["rouge_1"],
+        "rouge2": rouge["rouge_2"],
+        "rougeL": rouge["rouge_l"],
+        "bleu": compute_bleu(preds, refs),
+    }
     bs = compute_bertscore(preds, refs)
     metrics.update({"bertscore_p": bs["precision"], "bertscore_r": bs["recall"], "bertscore_f1": bs["f1"]})
     metrics["codebleu"] = compute_codebleu_simple(preds, refs)
