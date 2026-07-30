@@ -1,4 +1,4 @@
-# CodeGen Group14 — AIML B26 Capstone
+# AI-Powered Software Engineering Assistant
 
 Three capabilities through **Checkpoint 2**:
 
