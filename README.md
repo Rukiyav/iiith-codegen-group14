@@ -1,3 +1,23 @@
+---
+title: CodeGen Group14 AI System
+emoji: ⚡
+colorFrom: blue
+colorTo: indigo
+sdk: streamlit
+sdk_version: "1.32.0"
+app_file: app.py
+pinned: false
+---
+
+This project implements an end-to-end Code Intelligence System engineered around Salesforce/codegen-350M-multi. Built on an ultra-lean 5-file architecture, the system unifies 5 core software engineering AI capabilities:
+
+NL → Python Code Generation: Evaluated across 4 modes (Baseline, PEFT/LoRA Fine-Tuned, RAG, and Agentic Self-Correction) on MBPP and EvalPlus benchmarks (pass@1, pass@k).
+Code → Documentation Generation: Combines AST-grounded argument parsing with neural summarization to generate Google-style docstrings, quantitatively benchmarked using ROUGE-1/2/L, BLEU, and BERTScore metrics.
+Programming Language Translation: Achieves zero-shot idiomatic code translation across 7+ languages (Python, Java, C++, JavaScript, Go, Rust, TypeScript).
+Repository-Level RAG Engine: Performs Abstract Syntax Tree (AST) function extraction and dense FAISS vector indexing with similarity score thresholding ($\text{score} \ge 0.35$).
+Execution-Driven Agentic Repair Loop: An isolated subprocess sandbox that parses line-level traceback errors, reflects on diagnostic feedback, and iteratively repairs failing code logic.
+The application is fully containerized and features a dual-entry point: a production FastAPI REST API and an interactive Streamlit Web Dashboard.
+
 # CodeGen Group14 — AIML B26 Capstone (Ultra-Lean Architecture)
 
 Unified 5-file AI engine for **NL → Python**, **code → documentation (ROUGE-1/2/L)**, **PL1 → PL2 translation**, **Project RAG**, and **Agentic Self-Correction**.

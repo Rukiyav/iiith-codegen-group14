@@ -73,6 +73,7 @@ def format_sft_text(prompt: str, code: str) -> str:
 class CodeSFTDataset(Dataset):
     def __init__(self, examples: List[dict], tokenizer, max_length: int = LORA_MAX_LENGTH):
         self.tokenizer = tokenizer
+        self.tokenizer.truncation_side = "left"
         self.max_length = max_length
         self.items = []
         for ex in examples:

@@ -81,6 +81,8 @@ def load_tokenizer() -> AutoTokenizer:
         _tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, cache_dir=str(BASELINE_CACHE))
         if _tokenizer.pad_token is None:
             _tokenizer.pad_token = _tokenizer.eos_token
+        _tokenizer.padding_side = "left"
+        _tokenizer.truncation_side = "left"
     return _tokenizer
 
 
