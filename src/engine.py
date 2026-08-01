@@ -194,6 +194,14 @@ class ExecResult:
     code: str = ""
 
 
+COMMON_IMPORTS = (
+    "import math, re, sys, collections, itertools, functools, heapq, bisect, typing\n"
+    "from collections import Counter, defaultdict, deque\n"
+    "from itertools import combinations, permutations, groupby, product, accumulate\n"
+    "from typing import List, Dict, Tuple, Set, Optional, Any, Union\n"
+)
+
+
 def execute_with_tests(
     code: str,
     test_list: List[str],
@@ -201,7 +209,8 @@ def execute_with_tests(
     timeout: int = 10,
     project_dir: Optional[str] = None,
 ) -> ExecResult:
-    setup = "\n".join(test_imports) if test_imports else ""
+    setup_user = "\n".join(test_imports) if test_imports else ""
+    setup = f"{COMMON_IMPORTS}\n{setup_user}"
     test_block = "\n".join(test_list) if isinstance(test_list, list) else test_list
     full_code = f"{setup}\n{code}\n\n# --- tests ---\n{test_block}\n"
     with tempfile.NamedTemporaryFile(suffix=".py", mode="w", delete=False) as f:
@@ -225,7 +234,7 @@ def execute_with_tests(
             return ExecResult(True, r.stdout, "", "pass")
         err = r.stderr
         err_type = "runtime"
-        if "SyntaxError" in err:
+        if "SyntaxError" in err or "IndentationError" in err:
             err_type = "syntax"
         elif "AssertionError" in err:
             err_type = "assertion"
@@ -411,13 +420,15 @@ def build_freeform_prompt(task: str, signature: str, few_shot: bool = True) -> s
         '            return [seen[target - x], i]\n'
         '        seen[x] = i\n'
         '    return []\n\n'
+        '"""\nWrite a python function to count number of digits in a given string.\n"""\n'
+        'def number_ctr(s):\n'
+        '    return sum(1 for c in s if c.isdigit())\n\n'
+        '"""\nWrite a python function to find the minimum difference between any two elements in a given array.\n"""\n'
+        'def find_min_diff(arr, n):\n'
+        '    arr.sort()\n'
+        '    return min(arr[i+1] - arr[i] for i in range(n - 1))\n\n'
         '"""\nReturn True if string s is a valid palindrome.\n"""\n'
         "def is_palindrome(s):\n    return s == s[::-1]\n\n"
-        '"""\nReturn the factorial of non-negative integer n.\n"""\n'
-        "def factorial(n):\n"
-        "    if n <= 1:\n"
-        "        return 1\n"
-        "    return n * factorial(n - 1)\n\n"
     )
     return shots + core
 
@@ -446,7 +457,26 @@ def clean_body(sig: str, raw: str) -> str:
         cleaned = "    pass"
     elif not cleaned.startswith((" ", "\t")):
         cleaned = "\n".join(("    " + ln if ln.strip() else ln) for ln in cleaned.split("\n"))
-    return sig + "\n" + cleaned
+    
+    full = sig + "\n" + cleaned
+
+    # AST Auto-indentation fix for unindented loop/if block bodies
+    if not is_valid_python(full):
+        fixed_lines = []
+        in_colon_block = False
+        for ln in full.splitlines():
+            if in_colon_block and ln.strip() and not ln.startswith("    "):
+                fixed_lines.append("    " + ln.strip())
+                in_colon_block = False
+            else:
+                fixed_lines.append(ln)
+                if ln.strip().endswith(":"):
+                    in_colon_block = True
+        candidate_fixed = "\n".join(fixed_lines)
+        if is_valid_python(candidate_fixed):
+            full = candidate_fixed
+
+    return full
 
 
 # -----------------------------------------------------------------------------
@@ -781,7 +811,7 @@ def self_correct(
     verbose: bool = False,
     use_rag: bool = True,
     temperature: float = 0.0,
-    n_candidates: int = 1,
+    n_candidates: int = 3,
     project_dir: str | Path | None = None,
     rag_top_k: int = 3,
 ) -> Tuple[str, List[ExecResult]]:
