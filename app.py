@@ -196,6 +196,5 @@ def run_streamlit_ui():
                 st.code(out.get("output", ""), language=tgt_lang)
 
 
-if __name__ == "__main__":
-    if "streamlit" in sys.argv[0]:
-        run_streamlit_ui()
+if __name__ == "__main__" or "STREAMLIT_SERVER_PORT" in os.environ or any("streamlit" in arg.lower() for arg in sys.argv):
+    run_streamlit_ui()
