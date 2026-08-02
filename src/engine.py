@@ -273,22 +273,27 @@ def normalize_leetcode_signature(sig: str) -> str:
     return sig.strip()
 
 
+STOP_WORDS = {
+    "that", "to", "which", "a", "an", "the", "for", "in", "given", "returns",
+    "returning", "is", "should", "can", "will", "with", "takes", "accepts", "checks", "check"
+}
+
+
 def infer_signature(task: str) -> str:
     lower = task.lower()
     m = re.search(r"(def\s+\w+\s*\([^)]*\)\s*(?:->\s*[^:]+)?\s*:)", task)
     if m:
         return normalize_leetcode_signature(m.group(1).strip())
-    m = re.search(
-        r"(?:function|method|def)\s+(?:called\s+)?[`'\"]?(\w+)[`'\"]?\s*(\([^)]*\))?",
-        task,
-        re.I,
-    )
-    if m:
-        name = _snake(m.group(1))
-        args = (m.group(2) or "()").strip()
-        if args == "()":
-            args = _guess_args(lower)
-        return normalize_leetcode_signature(f"def {name}{args}:")
+    
+    for m in re.finditer(r"(?:function|method|def)\s+(?:called\s+)?([`'\"]?\w+[`'\"]?)\s*(\([^)]*\))?", task, re.I):
+        word = m.group(1).strip("'\"`").lower()
+        if word not in STOP_WORDS and not word.isdigit() and len(word) > 1:
+            name = _snake(m.group(1))
+            args = (m.group(2) or "()").strip()
+            if args == "()":
+                args = _guess_args(lower)
+            return normalize_leetcode_signature(f"def {name}{args}:")
+
     m = re.match(r"^\s*([A-Za-z][A-Za-z0-9 ]{2,40}?)\s*(?:\n|$)", task.strip())
     if m and "example" not in m.group(1).lower():
         title = m.group(1).strip()
@@ -897,14 +902,30 @@ def docstring_from_ast(code: str) -> Optional[str]:
     return "\n".join(lines)
 
 
-def generate_docstring(model, code: str, max_new_tokens: int = 160, temperature: float = 0.0, few_shot: bool = False) -> str:
-    structured = docstring_from_ast(code)
-    if structured:
-        return structured
-    prompt = f"# Write a Google-style docstring body for:\n{code.rstrip()}\n# Docstring:\n\"\"\"\n"
+def generate_docstring(model, code: str, max_new_tokens: int = 120, temperature: float = 0.0) -> str:
+    prompt = f'"""\nSummarize what the following Python function does in one clear sentence:\n{code.strip()}\n"""\n# Summary:\n'
     raw = generate_code(model, prompt, max_new_tokens=max_new_tokens, temperature=temperature, stop=False)[0]
-    end = raw.find('"""')
-    return raw[:end].strip() if end != -1 else raw.strip()
+    summary = raw.split("\n")[0].strip().rstrip(".")
+    if not summary or summary.startswith("Summarize") or "following Python" in summary:
+        summary = "Executes the function logic."
+    summary = summary + "."
+
+    try:
+        tree = ast.parse(code)
+        fn = next((n for n in tree.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))), None)
+    except Exception:
+        fn = None
+
+    lines = [summary, ""]
+    if fn:
+        args = [a.arg for a in list(fn.args.posonlyargs) + list(fn.args.args) if a.arg not in ("self", "cls")]
+        if args:
+            lines.append("Args:")
+            for a in args:
+                lines.append(f"    {a}: Input `{a}` parameter.")
+            lines.append("")
+        lines.append("Returns:\n    Computed result.")
+    return "\n".join(lines)
 
 
 LANG_LABELS = {"python": "Python", "java": "Java", "javascript": "JavaScript", "typescript": "TypeScript", "cpp": "C++", "go": "Go", "rust": "Rust"}

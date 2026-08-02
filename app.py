@@ -151,7 +151,7 @@ def run_streamlit_ui():
     tab1, tab2, tab3 = st.tabs(["💻 Code Generation", "📝 Doc Generation", "🔄 PL Translation"])
 
     with tab1:
-        st.subheader("NL / LeetCode → Python Generation")
+        st.subheader("NL → Python Generation")
         prompt = st.text_area("Prompt / Problem Description", value="Write a function that checks if a string is a palindrome.", key="gen_prompt_area")
         col1, col2 = st.columns(2)
         with col1:
