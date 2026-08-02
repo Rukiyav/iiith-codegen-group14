@@ -152,22 +152,22 @@ def run_streamlit_ui():
 
     with tab1:
         st.subheader("NL / LeetCode → Python Generation")
-        prompt = st.text_area("Prompt / Problem Description", value="Write a function that checks if a string is a palindrome.")
+        prompt = st.text_area("Prompt / Problem Description", value="Write a function that checks if a string is a palindrome.", key="gen_prompt_area")
         col1, col2 = st.columns(2)
         with col1:
-            mode = st.selectbox("Generation Mode", ["baseline", "lora", "rag", "agentic"])
-            project_dir = st.text_input("Project Folder Path (RAG)", value="")
+            mode = st.selectbox("Generation Mode", ["baseline", "lora", "rag", "agentic"], key="gen_mode_select")
+            project_dir = st.text_input("Project Folder Path (RAG)", value="", key="gen_project_dir_input")
         with col2:
-            temp = st.slider("Temperature", 0.0, 1.0, 0.2)
-            max_tokens = st.number_input("Max New Tokens", 64, 1024, 384)
+            temp = st.slider("Temperature", 0.0, 1.0, 0.2, key="gen_temp_slider")
+            max_tokens = st.number_input("Max New Tokens", 64, 1024, 384, key="gen_tokens_num")
 
-        if st.button("Generate Code"):
+        if st.button("Generate Code", key="btn_generate_code"):
             with st.spinner("Generating solution..."):
                 res = generate_code_for_task(
                     prompt,
                     mode=mode,
                     temperature=temp,
-                    max_new_tokens=max_tokens,
+                    max_new_tokens=int(max_tokens),
                     project_dir=project_dir if project_dir.strip() else None,
                 )
                 st.code(res.code, language="python")
@@ -175,8 +175,8 @@ def run_streamlit_ui():
 
     with tab2:
         st.subheader("Code → Google-style Docstring")
-        code_input = st.text_area("Python Code", value="def add(a, b):\n    return a + b", height=150)
-        if st.button("Generate Docstring"):
+        code_input = st.text_area("Python Code", value="def add(a, b):\n    return a + b", height=150, key="doc_code_input")
+        if st.button("Generate Docstring", key="btn_generate_doc"):
             with st.spinner("Generating..."):
                 model = load_base_model()
                 doc = generate_docstring(model, code_input)
@@ -186,15 +186,15 @@ def run_streamlit_ui():
         st.subheader("Programming Language Translation")
         col_a, col_b = st.columns(2)
         with col_a:
-            src_lang = st.selectbox("Source Language", list(LANG_LABELS.keys()), index=0)
+            src_lang = st.selectbox("Source Language", list(LANG_LABELS.keys()), index=0, key="trans_src_lang")
         with col_b:
-            tgt_lang = st.selectbox("Target Language", list(LANG_LABELS.keys()), index=1)
-        src_code = st.text_area("Source Code", value="def is_even(n):\n    return n % 2 == 0", height=150)
-        if st.button("Translate"):
+            tgt_lang = st.selectbox("Target Language", list(LANG_LABELS.keys()), index=1, key="trans_tgt_lang")
+        src_code = st.text_area("Source Code", value="def is_even(n):\n    return n % 2 == 0", height=150, key="trans_src_code")
+        if st.button("Translate", key="btn_translate_code"):
             with st.spinner("Translating..."):
                 out = translate_pl(src_code, src_lang, tgt_lang)
                 st.code(out.get("output", ""), language=tgt_lang)
 
 
-if __name__ == "__main__" or "STREAMLIT_SERVER_PORT" in os.environ or any("streamlit" in arg.lower() for arg in sys.argv):
+if __name__ == "__main__":
     run_streamlit_ui()
