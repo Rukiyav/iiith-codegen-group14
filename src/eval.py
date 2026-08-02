@@ -117,27 +117,41 @@ def compute_all_metrics(preds: List[str], refs: List[str], test_lists: Optional[
 
 def run_mode(mode_name: str, model, eval_problems: list, eval_refs: list, eval_tests: list, eval_imports: list, use_rag: bool = False, use_agent: bool = False, verbose: bool = True) -> Dict:
     n = len(eval_problems)
-    preds, all_samps = [], []
+    preds, all_samps, details = [], [], []
     t0 = time.time()
     for i, task in enumerate(eval_problems):
         sig = get_signature(task)
         if use_agent:
-            code, _ = self_correct(model, task, max_retries=2)
+            code, history = self_correct(model, task, max_retries=2)
             samples = [code]
+            exec_res = history[-1] if history else execute_with_tests(code, task["test_list"], task.get("test_imports"))
         elif use_rag:
             raw = rag_generate(model, task["prompt"], signature=sig)
-            samples = [clean_body(sig, raw[0])]
+            code = clean_body(sig, raw[0])
+            samples = [code]
+            exec_res = execute_with_tests(code, task["test_list"], task.get("test_imports"))
         else:
             prompt = f'"""\n{task["prompt"]}\n"""\n{sig}\n'
             raw = generate_code(model, prompt, temperature=0.0)
-            samples = [clean_body(sig, raw[0])]
+            code = clean_body(sig, raw[0])
+            samples = [code]
+            exec_res = execute_with_tests(code, task["test_list"], task.get("test_imports"))
+
         all_samps.append(samples)
-        preds.append(samples[0])
+        preds.append(code)
+        details.append({
+            "task_id": task.get("task_id", i + 1),
+            "prompt": task["prompt"],
+            "generated_code": code,
+            "passed": exec_res.passed,
+            "error_type": exec_res.error_type,
+            "stderr": (exec_res.stderr or "")[:300],
+        })
 
     elapsed = time.time() - t0
     metrics = compute_all_metrics(preds, eval_refs, eval_tests, all_samps, eval_imports, verbose=verbose)
     metrics["generation_time_s"] = elapsed
-    return {"mode": mode_name, "n": n, "metrics": metrics, "sample_preds": preds[:5]}
+    return {"mode": mode_name, "n": n, "metrics": metrics, "details": details, "sample_preds": preds[:5]}
 
 
 def print_comparison(comparison: Dict, eval_n: int = EVAL_N) -> None:
