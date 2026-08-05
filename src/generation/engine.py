@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Optional
 
 import torch
-from peft import PeftModel
 from transformers import AutoModelForCausalLM, AutoTokenizer, StoppingCriteria, StoppingCriteriaList
 
 from src.models.registry import DEFAULT_MODEL_ID, resolve_hub_path
@@ -78,16 +76,7 @@ class CodeGenerator:
         self._tokenizer = AutoTokenizer.from_pretrained(self.model_name_or_path, use_fast=True)
         if self._tokenizer.pad_token is None:
             self._tokenizer.pad_token = self._tokenizer.eos_token
-
-        adapter_config = Path(self.model_name_or_path) / "adapter_config.json"
-        if adapter_config.is_file():
-            with adapter_config.open("r", encoding="utf-8") as f:
-                base_model_name = json.load(f)["base_model_name_or_path"]
-            base_model = AutoModelForCausalLM.from_pretrained(base_model_name)
-            self._model = PeftModel.from_pretrained(base_model, self.model_name_or_path)
-        else:
-            self._model = AutoModelForCausalLM.from_pretrained(self.model_name_or_path)
-
+        self._model = AutoModelForCausalLM.from_pretrained(self.model_name_or_path)
         self._model.to(self._device)
         if getattr(self._model.config, "pad_token_id", None) is None:
             self._model.config.pad_token_id = self._tokenizer.pad_token_id
@@ -108,7 +97,6 @@ class CodeGenerator:
         top_p: float = 0.95,
         seed: int | None = 42,
         stop_strings: list[str] | None = None,
-        min_new_tokens: int = 0,
     ) -> str:
         self.load()
         assert self._tokenizer is not None and self._model is not None
@@ -131,10 +119,6 @@ class CodeGenerator:
             "eos_token_id": self._tokenizer.eos_token_id,
             **_sampling_kwargs(temperature, top_p, seed),
         }
-        if min_new_tokens > 0:
-            # A prompt that ends with a closing docstring looks like end-of-file to
-            # CodeGen, so greedy decoding emits EOS immediately and returns "".
-            gen_kwargs["min_new_tokens"] = min(min_new_tokens, max_new_tokens)
         if stop_strings:
             stop_ids = []
             for s in stop_strings:

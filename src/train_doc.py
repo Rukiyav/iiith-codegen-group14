@@ -28,7 +28,6 @@ from src.training_utils import (
     has_trainable_labels,
     truncate_text_to_tokens,
 )
-from src.models.lora import apply_lora
 
 logger = logging.getLogger(__name__)
 DEFAULT_MODEL = "Salesforce/codegen-350M-multi"
@@ -88,11 +87,8 @@ def train(args: argparse.Namespace) -> None:
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    # Weights stay fp32; Trainer's AMP handles fp16. Loading fp16 weights here
-    # makes the grad scaler raise "Attempting to unscale FP16 gradients".
-    model = AutoModelForCausalLM.from_pretrained(args.model_name_or_path, dtype=torch.float32)
-    if args.lora:
-        model = apply_lora(model)
+    load_dtype = torch.float16 if args.fp16 and torch.cuda.is_available() else torch.float32
+    model = AutoModelForCausalLM.from_pretrained(args.model_name_or_path, dtype=load_dtype)
     device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
     model.to(device)
 
@@ -138,7 +134,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model_name_or_path", default=DEFAULT_MODEL)
     parser.add_argument("--output_dir", default="experiments/checkpoints/codegen-doc-cp1")
     parser.add_argument("--full", action="store_true", help="Train on full CoDocBench train split (CP2)")
-    parser.add_argument("--lora", action="store_true", help="Train a LoRA adapter instead of full fine-tune")
     parser.add_argument("--num_train_epochs", type=int, default=1)
     parser.add_argument("--per_device_train_batch_size", type=int, default=1)
     parser.add_argument("--learning_rate", type=float, default=2e-5)
@@ -156,11 +151,7 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Keep best checkpoint by eval loss (requires validation split)",
     )
-    args = parser.parse_args()
-    if args.lora and args.learning_rate == parser.get_default("learning_rate"):
-        # LoRA updates a small fraction of params; the full-fine-tune LR is too low to move it.
-        args.learning_rate = 2e-4
-    return args
+    return parser.parse_args()
 
 
 def main() -> None:

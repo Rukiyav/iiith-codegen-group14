@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field
 class CodeGenerateRequest(BaseModel):
     prompt: str
     model: str | None = None
-    max_new_tokens: int = 300
+    max_new_tokens: int = 150
     temperature: float = 0.0
     test_list: list[str] = Field(default_factory=list)
     use_agent: bool = False
@@ -31,7 +31,7 @@ class AgentCodeRequest(BaseModel):
     test_list: list[str] = Field(default_factory=list)
     model: str | None = None
     max_retries: int = 3
-    max_new_tokens: int = 300
+    max_new_tokens: int = 150
     temperature: float = 0.0
 
 

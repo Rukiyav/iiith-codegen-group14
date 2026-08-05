@@ -10,7 +10,7 @@ from src.models.registry import DEFAULT_MODEL_ID, resolve_hub_path, resolve_mode
 from src.prompts import doc_prompt
 from src.training_utils import truncate_text_to_tokens
 
-DEFAULT_DOC_MAX_TOKENS = 64
+DEFAULT_DOC_MAX_TOKENS = 120
 PROMPT_OVERHEAD_TOKENS = 32
 
 
@@ -37,9 +37,7 @@ def generate_documentation(
     model_name_or_path: str | None = None,
     max_new_tokens: int = DEFAULT_DOC_MAX_TOKENS,
     temperature: float = 0.0,
-    context: str = "",
 ) -> str:
-    """context: optional few-shot block (e.g. from src.rag.augment) prepended before the prompt."""
     if not _should_use_lm(model_name_or_path):
         return fallback_documentation(code)
 
@@ -50,11 +48,11 @@ def generate_documentation(
         64,
         generator._max_context() - max_new_tokens - PROMPT_OVERHEAD_TOKENS,
     )
-    truncated_code = truncate_text_to_tokens(code, generator._tokenizer, max_code_tokens)
+    code = truncate_text_to_tokens(code, generator._tokenizer, max_code_tokens)
     raw = generator.generate(
-        context + doc_prompt(truncated_code),
+        doc_prompt(code),
         max_new_tokens=max_new_tokens,
         temperature=temperature,
         stop_strings=DOC_STOP_STRINGS,
     )
-    return finalize_documentation(truncated_code, raw)
+    return finalize_documentation(code, raw)
