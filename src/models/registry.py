@@ -51,16 +51,19 @@ def _list_local_checkpoints() -> list[ModelSpec]:
         return []
     options: list[ModelSpec] = []
     for path in sorted(CHECKPOINTS_DIR.iterdir()):
-        if not path.is_dir() or not (path / "config.json").is_file():
+        is_full = (path / "config.json").is_file()
+        is_lora = (path / "adapter_config.json").is_file()
+        if not path.is_dir() or not (is_full or is_lora):
             continue
         rel = path.relative_to(ROOT).as_posix()
         task = "docs" if "doc" in path.name else "code"
+        kind = "LoRA" if is_lora else "fine-tuned"
         options.append(
             ModelSpec(
                 id=rel,
-                label=f"Fine-tuned ({task}): {path.name}",
+                label=f"{kind} ({task}): {path.name}",
                 hub_id=rel,
-                size="fine-tuned",
+                size=kind.lower(),
             )
         )
     return options

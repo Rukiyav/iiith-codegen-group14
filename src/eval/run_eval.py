@@ -7,16 +7,18 @@ import hashlib
 import json
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from src.agent.code_agent import agent_generate_code
 from src.data.codoc import load_codoc_split
 from src.data.mbpp import load_processed
-from src.eval.code_eval import evaluate_code_batch, pass_at_1
+from src.eval.code_eval import compute_codebleu, evaluate_code_batch, pass_at_1
 from src.eval.doc_eval import evaluate_doc_batch
 from src.generation.code import generate_python_code
 from src.generation.docs import generate_documentation
 from src.models.registry import DEFAULT_MODEL_ID, resolve_hub_path
+from src.rag.augment import build_code_context, build_doc_context
+from src.rag.retrieve import retrieve_code_examples, retrieve_doc_examples
 
 DEFAULT_MODEL = resolve_hub_path(DEFAULT_MODEL_ID)
 
@@ -42,14 +44,27 @@ def run_code_eval(
     max_samples: Optional[int] = None,
     use_agent: bool = False,
     max_retries: int = 3,
+    use_rag: bool = False,
+    rag_k: int = 2,
+    retry_temperature: float = 0.0,
+    num_candidates: int = 1,
+    use_failure_context: bool = True,
 ) -> Dict[str, Any]:
     examples = load_processed(split)
     subset = examples[:max_samples] if max_samples else examples
 
     if not use_agent:
 
-        def _gen(prompt: str) -> str:
-            return generate_python_code(prompt, model_name_or_path=model_name_or_path)
+        def _gen(prompt: str, tests: Optional[List[str]] = None) -> str:
+            context = ""
+            if use_rag:
+                context = build_code_context(retrieve_code_examples(prompt, k=rag_k))
+            return generate_python_code(
+                prompt,
+                model_name_or_path=model_name_or_path,
+                test_list=tests,
+                context=context,
+            )
 
         result = evaluate_code_batch(subset, _gen, max_samples=None)
         return {
@@ -57,8 +72,8 @@ def run_code_eval(
             "model_id": model_name_or_path,
             "dataset": "mbpp",
             "split": split,
-            "mode": "baseline",
-            "metrics": {"pass_at_1": result["pass_at_1"]},
+            "mode": "rag" if use_rag else "baseline",
+            "metrics": {"pass_at_1": result["pass_at_1"], "codebleu": result["codebleu"]},
             "n_samples": result["n_samples"],
             "n_passed": result["n_passed"],
             "details": result["details"],
@@ -73,6 +88,9 @@ def run_code_eval(
             tests,
             model_name_or_path=model_name_or_path,
             max_retries=max_retries,
+            retry_temperature=retry_temperature,
+            num_candidates=num_candidates,
+            use_failure_context=use_failure_context,
         )
         if agent_result.passed and agent_result.attempts > 1:
             retry_successes += 1
@@ -81,12 +99,14 @@ def run_code_eval(
                 "id": ex.get("id"),
                 "prompt": ex.get("prompt"),
                 "generated_code": agent_result.final_code,
+                "reference_code": ex.get("code") or ex.get("canonical_solution") or "",
                 "passed": agent_result.passed,
                 "attempts": agent_result.attempts,
             }
         )
 
     passed_flags = [d["passed"] for d in details]
+    codebleu = compute_codebleu([(d["reference_code"], d["generated_code"]) for d in details])
     return {
         "task": "code",
         "model_id": model_name_or_path,
@@ -96,6 +116,7 @@ def run_code_eval(
         "max_retries": max_retries,
         "metrics": {
             "pass_at_1": pass_at_1(passed_flags),
+            "codebleu": codebleu,
             "retry_success_rate": retry_successes / len(subset) if subset else 0.0,
             "avg_attempts": sum(d["attempts"] for d in details) / len(subset) if subset else 0.0,
         },
@@ -110,11 +131,16 @@ def run_doc_eval(
     split: str = "test",
     max_samples: Optional[int] = None,
     include_bertscore: bool = False,
+    use_rag: bool = False,
+    rag_k: int = 2,
 ) -> Dict[str, Any]:
     examples = load_codoc_split(split)
 
     def _gen(code: str) -> str:
-        return generate_documentation(code, model_name_or_path=model_name_or_path)
+        context = ""
+        if use_rag:
+            context = build_doc_context(retrieve_doc_examples(code, k=rag_k))
+        return generate_documentation(code, model_name_or_path=model_name_or_path, context=context)
 
     result = evaluate_doc_batch(
         examples,
@@ -127,6 +153,7 @@ def run_doc_eval(
         "model_id": model_name_or_path,
         "dataset": "codocbench",
         "split": split,
+        "mode": "rag" if use_rag else "baseline",
         "metrics": result["metrics"],
         "n_samples": result["n_samples"],
         "details": result["details"],
@@ -135,7 +162,8 @@ def run_doc_eval(
 
 def run_eval(args: argparse.Namespace) -> Path:
     config_hash = hashlib.md5(
-        f"{args.task}:{args.model}:{args.split}:{args.max_samples}:{args.agent}".encode()
+        f"{args.task}:{args.model}:{args.split}:{args.max_samples}:{args.agent}:{args.rag}:"
+        f"{args.retry_temperature}:{args.num_candidates}".encode()
     ).hexdigest()[:8]
 
     if args.task == "code":
@@ -145,6 +173,11 @@ def run_eval(args: argparse.Namespace) -> Path:
             args.max_samples,
             use_agent=args.agent,
             max_retries=args.max_retries,
+            use_rag=args.rag,
+            rag_k=args.rag_k,
+            retry_temperature=args.retry_temperature,
+            num_candidates=args.num_candidates,
+            use_failure_context=not args.no_failure_context,
         )
     elif args.task == "docs":
         payload = run_doc_eval(
@@ -152,6 +185,8 @@ def run_eval(args: argparse.Namespace) -> Path:
             args.split,
             args.max_samples,
             include_bertscore=args.bertscore,
+            use_rag=args.rag,
+            rag_k=args.rag_k,
         )
     else:
         raise ValueError(f"Unknown task: {args.task}")
@@ -181,6 +216,30 @@ def parse_args() -> argparse.Namespace:
         help="Use agentic self-correction for code eval (generate → test → retry)",
     )
     parser.add_argument("--max_retries", type=int, default=3)
+    parser.add_argument(
+        "--retry_temperature",
+        type=float,
+        default=0.0,
+        help="Sampling temperature for agent retries (0 = greedy, matches original behavior)",
+    )
+    parser.add_argument(
+        "--num_candidates",
+        type=int,
+        default=1,
+        help="Best-of-N candidates per agent retry when --retry_temperature > 0",
+    )
+    parser.add_argument(
+        "--no_failure_context",
+        action="store_true",
+        help="Resample the original prompt on retries instead of showing the model its failed code "
+        "(the failure-context prompt makes small non-instruction-tuned models echo the same bug back)",
+    )
+    parser.add_argument(
+        "--rag",
+        action="store_true",
+        help="Retrieval-augmented generation: prepend top-k similar train examples as few-shot context",
+    )
+    parser.add_argument("--rag_k", type=int, default=2, help="Number of retrieved examples for --rag")
     return parser.parse_args()
 
 

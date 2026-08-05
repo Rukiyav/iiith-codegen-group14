@@ -86,6 +86,7 @@ def generate_code(req: CodeGenerateRequest) -> GenerateResponse:
         model_name_or_path=model,
         max_new_tokens=req.max_new_tokens,
         temperature=req.temperature,
+        test_list=req.test_list,
     )
 
     if req.test_list:

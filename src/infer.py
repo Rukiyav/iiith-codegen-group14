@@ -23,7 +23,7 @@ def parse_args() -> argparse.Namespace:
         default=DEFAULT_MODEL_ID,
         help="Preset id (codegen-350m), hub id, or checkpoint path",
     )
-    parser.add_argument("--max_new_tokens", type=int, default=150)
+    parser.add_argument("--max_new_tokens", type=int, default=300)
     parser.add_argument("--temperature", type=float, default=0.0, help="0 = greedy (deterministic)")
     return parser.parse_args()
 
