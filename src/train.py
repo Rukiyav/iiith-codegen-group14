@@ -24,6 +24,7 @@ sys.path.insert(0, str(ROOT))
 from src.data.mbpp import PROCESSED_DIR, download_mbpp, preprocess_mbpp
 from src.prompts import code_training_text, code_prompt
 from src.training_utils import build_sft_tokenized_example, has_trainable_labels
+from src.models.lora import apply_lora
 
 logger = logging.getLogger(__name__)
 DEFAULT_MODEL = "Salesforce/codegen-350M-multi"
@@ -59,8 +60,9 @@ def load_mbpp_datasets(
 
 def tokenize_function(example: Dict, tokenizer, max_length: int):
     solution = example.get("canonical_solution", "").strip()
-    input_text = code_training_text(example.get("prompt", ""), solution)
-    prompt_text = code_prompt(example.get("prompt", ""))
+    tests = example.get("test_list") or []
+    input_text = code_training_text(example.get("prompt", ""), solution, tests)
+    prompt_text = code_prompt(example.get("prompt", ""), tests)
     return build_sft_tokenized_example(tokenizer, input_text, prompt_text, max_length)
 
 
@@ -79,8 +81,11 @@ def train(args: argparse.Namespace) -> None:
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    load_dtype = torch.float16 if args.fp16 and torch.cuda.is_available() else torch.float32
-    model = AutoModelForCausalLM.from_pretrained(args.model_name_or_path, dtype=load_dtype)
+    # Weights stay fp32; Trainer's AMP handles fp16. Loading fp16 weights here
+    # makes the grad scaler raise "Attempting to unscale FP16 gradients".
+    model = AutoModelForCausalLM.from_pretrained(args.model_name_or_path, dtype=torch.float32)
+    if args.lora:
+        model = apply_lora(model)
     device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
     model.to(device)
 
@@ -127,6 +132,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model_name_or_path", default=DEFAULT_MODEL)
     parser.add_argument("--output_dir", default="experiments/checkpoints/codegen-mbpp-cp1")
     parser.add_argument("--full", action="store_true", help="Train on full MBPP train split (CP2)")
+    parser.add_argument("--lora", action="store_true", help="Train a LoRA adapter instead of full fine-tune")
     parser.add_argument("--num_train_epochs", type=int, default=1)
     parser.add_argument("--per_device_train_batch_size", type=int, default=1)
     parser.add_argument("--per_device_eval_batch_size", type=int, default=1)
@@ -134,7 +140,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--gradient_accumulation_steps", type=int, default=4)
     parser.add_argument("--max_train_samples", type=int, default=128)
     parser.add_argument("--max_eval_samples", type=int, default=32)
-    parser.add_argument("--max_length", type=int, default=512)
+    parser.add_argument("--max_length", type=int, default=768)
     parser.add_argument("--logging_steps", type=int, default=10)
     parser.add_argument("--evaluation_strategy", default="epoch", choices=["no", "steps", "epoch"])
     parser.add_argument("--save_strategy", default="epoch", choices=["no", "steps", "epoch"])
@@ -145,7 +151,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Keep best checkpoint by eval loss (requires validation split)",
     )
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.lora and args.learning_rate == parser.get_default("learning_rate"):
+        # LoRA updates a small fraction of params; the full-fine-tune LR is too low to move it.
+        args.learning_rate = 2e-4
+    return args
 
 
 def main() -> None:

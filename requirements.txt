@@ -14,3 +14,7 @@ sacrebleu
 bert-score
 pytest
 peft
+scikit-learn
+codebleu
+tree-sitter==0.22.3
+tree-sitter-python==0.21.0
