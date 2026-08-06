@@ -1,0 +1,23 @@
+{
+  "mode": "agentic",
+  "n": 10,
+  "metrics": {
+    "rouge1": 0.5166766566766567,
+    "rouge2": 0.3169169752637663,
+    "rougeL": 0.4764113664113664,
+    "bleu": 0.28482753834297486,
+    "bertscore_p": 0.9149280786514282,
+    "bertscore_r": 0.8815549612045288,
+    "bertscore_f1": 0.8964676856994629,
+    "codebleu": 0.4695991706532516,
+    "pass@1": 0.3,
+    "generation_time_s": 2598.1235299110413
+  },
+  "sample_preds": [
+    "def jacobsthal_num(n):\n    return n*(2*n - 1)",
+    "def min_k(test_list, K):\n    res = []\n    for ele in test_list:\n      N = len(ele)\n      if N > K:\n        res.append(min_product_tuple(ele))\n    return (str(res))",
+    "def extract_index_list(l1, l2, l3):\n    return (common_element(l1, l2) & common_element(l3, l2))",
+    "def second_smallest(numbers):\n    res = smallest_num(numbers[0:1])\n    return (res)",
+    "def text_match_zero_one(text):\n    patterns = 'ab{1,2}'\n    if re.search(patterns,  text):\n            return True\n    else:\n            return False"
+  ]
+}

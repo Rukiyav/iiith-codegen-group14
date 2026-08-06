@@ -1,0 +1,23 @@
+{
+  "mode": "lora",
+  "n": 10,
+  "metrics": {
+    "rouge1": 0.5720698975843171,
+    "rouge2": 0.418856332165715,
+    "rougeL": 0.537526252900332,
+    "bleu": 0.34317717418558114,
+    "bertscore_p": 0.9283488988876343,
+    "bertscore_r": 0.8744703531265259,
+    "bertscore_f1": 0.8999933004379272,
+    "codebleu": 0.4994837408993043,
+    "pass@1": 0.2,
+    "generation_time_s": 1499.0596652030945
+  },
+  "sample_preds": [
+    "def jacobsthal_num(n):\n    if (n == 0): \n        return 2\n    if (n == 1): \n        return 1\n    if (n == 2): \n        return 1\n    if (n == 3): \n        return 1\n    if (n == 5): \n        return 1\n    if (n == 11): \n        return 1\n    if (n == 21): \n        return 1\n    if (n == 43): \n        return 1\n    if (n == 85): \n        return 1\n    if (n == 171): \n        return 1\n    if (n == 341): \n        return 1\n    if (n == 683): \n        return 1\n    if (n == 1365): \n        return 1\n    if (n == 2731): \n        return 1\n    return 0",
+    "def min_k(test_list, K):\n    res = min(test_list, key=len)\n    return (res)",
+    "def extract_index_list(l1, l2, l3):\n    result = list(set.intersection(l1, l2, l3))\n    return result",
+    "def second_smallest(numbers):\n    return min(numbers[1:])",
+    "def text_match_zero_one(text):\n    patterns = 'a+b'\n    if re.search(patterns,  text):\n      return True\n    else:\n      return False"
+  ]
+}
