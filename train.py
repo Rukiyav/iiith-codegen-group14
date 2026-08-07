@@ -275,6 +275,7 @@ def train_lora(
     total_steps = min(max_steps, max(1, len(train_loader) * epochs))
     scheduler = get_cosine_schedule_with_warmup(optimizer, num_warmup_steps=max(1, int(total_steps * 0.05)), num_training_steps=total_steps)
 
+    print(f"Moving model to {device} and starting training loop for {epochs} epochs ({total_steps} total steps)...")
     model = model.to(device)
     model.train()
     global_step = 0
@@ -296,7 +297,7 @@ def train_lora(
             scheduler.step()
             optimizer.zero_grad()
             global_step += 1
-            if global_step % 20 == 0:
+            if global_step % 5 == 0 or global_step == 1:
                 print(f"Step {global_step}/{total_steps} - loss: {loss.item():.4f}")
 
             # Validation loop and Early Stopping
