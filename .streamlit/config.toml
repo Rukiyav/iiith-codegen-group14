@@ -1,0 +1,6 @@
+[server]
+fileWatcherType = "none"
+folderWatchBlacklist = ["*/site-packages/*", "*/.venv/*"]
+
+[runner]
+magicEnabled = false
