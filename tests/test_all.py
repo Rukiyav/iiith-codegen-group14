@@ -65,6 +65,12 @@ def test_clean_body_stops_at_dedent():
     assert "def other" not in code
     assert "return 42" in code
 
+def test_clean_body_recovers_mismatched_first_line_indentation():
+    sig = "def min_k(test_list, K):"
+    raw = "min_k = min(test_list[:K])\n    return min_k"
+    code = clean_body(sig, raw)
+    assert code == "def min_k(test_list, K):\n    min_k = min(test_list[:K])\n    return min_k"
+
 
 def test_execute_with_tests_pass():
     code = "def answer():\n    return 42"
@@ -269,6 +275,8 @@ def test_mocked_model_backends(mock_tokenizer, mock_model):
     
     mock_tok_instance = MagicMock()
     mock_tok_instance.apply_chat_template.return_value = "<|im_start|>mocked chat prompt"
+    mock_tok_instance.decode.return_value = "    return 42"
+    mock_tok_instance.eos_token_id = 0
     mock_tokenizer.return_value = mock_tok_instance
     
     mock_model_instance = MagicMock()
@@ -397,11 +405,13 @@ def test_end_to_end_regression(mock_tokenizer, mock_model):
     _backends.clear()
     
     mock_tok_instance = MagicMock()
+    mock_tok_instance.encode.return_value = [1, 2, 3]
+    mock_tok_instance.eos_token_id = 0
     mock_tokenizer.return_value = mock_tok_instance
     
     mock_model_instance = MagicMock()
     mock_model_instance.to.return_value = mock_model_instance
-    mock_model_instance.generate.return_value = [[0]]
+    mock_model_instance.generate.return_value = [[1, 2, 3, 4, 5]]
     mock_model.return_value = mock_model_instance
     
     with patch("src.engine.execute_with_tests") as mock_exec, \
@@ -461,3 +471,7 @@ def test_extract_code_block():
     # 4. Continuation block (CodeGen style - no "def ")
     raw_continuation = "    return x"
     assert extract_code_block(raw_continuation) == "    return x"
+    
+    # 5. Unclosed fence block
+    raw_unclosed = "```python\nif x == 0:\n    return 0"
+    assert extract_code_block(raw_unclosed) == "if x == 0:\n    return 0"

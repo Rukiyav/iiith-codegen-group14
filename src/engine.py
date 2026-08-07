@@ -105,10 +105,11 @@ class HuggingFaceBackend(ModelBackend):
     def get_tokenizer(self):
         return self.tokenizer
 
-    def _format_prompt(self, prompt: str) -> str:
+    def _format_prompt(self, prompt: str, system_prompt: Optional[str] = None) -> str:
         if self.prompt_style == "chat":
+            sys_msg = system_prompt or "You are a helpful coding assistant. Write a fully self-contained Python function that solves the task. Output ONLY valid python code inside a clean block without markdown."
             messages = [
-                {"role": "system", "content": "You are a helpful coding assistant. Write a fully self-contained Python function that solves the task. Output ONLY valid python code inside a clean block without markdown."},
+                {"role": "system", "content": sys_msg},
                 {"role": "user", "content": prompt}
             ]
             return self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
@@ -157,8 +158,9 @@ class HuggingFaceBackend(ModelBackend):
         top_p: float = 0.95,
         num_samples: int = 1,
         stop: bool = True,
+        system_prompt: Optional[str] = None,
     ) -> List[str]:
-        formatted = self._format_prompt(prompt)
+        formatted = self._format_prompt(prompt, system_prompt=system_prompt)
         return self._generate_raw(
             formatted,
             max_new_tokens=max_new_tokens,
@@ -377,6 +379,7 @@ def generate_code(
     num_samples: int = 1,
     stop: bool = True,
     tokenizer=None,
+    system_prompt: Optional[str] = None,
 ) -> List[str]:
     if isinstance(model, ModelBackend):
         return model.generate(
@@ -386,6 +389,7 @@ def generate_code(
             top_p=top_p,
             num_samples=num_samples,
             stop=stop,
+            system_prompt=system_prompt,
         )
 
     tokenizer = tokenizer or load_tokenizer()
@@ -944,18 +948,26 @@ def is_valid_python(code: str) -> bool:
 
 
 def extract_code_block(raw: str) -> str:
-    m = re.search(r"```(?:python)?\s*\n(.*?)```", raw, re.DOTALL | re.IGNORECASE)
+    raw_trimmed = raw.strip()
+    if raw_trimmed.count("```") % 2 == 1:
+        raw_trimmed = raw_trimmed + "\n```"
+    m = re.search(r"```(?:[a-zA-Z0-9_+-]+)?\s*\n(.*?)```", raw_trimmed, re.DOTALL | re.IGNORECASE)
     if m:
         return m.group(1).strip()
-    m2 = re.search(r"```(.*?)```", raw, re.DOTALL)
+    m2 = re.search(r"```(.*?)```", raw_trimmed, re.DOTALL)
     if m2:
         return m2.group(1).strip()
-    if "def " in raw:
-        idx = raw.index("def ")
-        pre = raw[:idx].strip()
+    if "def " in raw_trimmed:
+        idx = raw_trimmed.index("def ")
+        pre = raw_trimmed[:idx].strip()
+        # Only strip pre-def text if it looks like prose (not indented code)
         if pre and not pre.startswith("class ") and not pre.startswith("import ") and not pre.startswith("from "):
-            return raw[idx:].strip()
-    return raw.strip()
+            # Don't strip if pre contains Python keywords/code patterns
+            code_indicators = ("return ", "if ", "for ", "while ", "try:", "with ", "    ", "yield ", "assert ")
+            pre_is_code = any(pre.startswith(kw) or ("\n" + kw) in pre or ("\n    ") in pre for kw in code_indicators)
+            if not pre_is_code:
+                return raw_trimmed[idx:].strip()
+    return raw.rstrip()
 
 
 def clean_body(sig: str, raw: str) -> str:
@@ -972,28 +984,196 @@ def clean_body(sig: str, raw: str) -> str:
     cleaned = "\n".join(body).rstrip()
     if not cleaned.strip():
         cleaned = "    pass"
-    elif not cleaned.startswith((" ", "\t")):
-        cleaned = "\n".join(("    " + ln if ln.strip() else ln) for ln in cleaned.split("\n"))
+    else:
+        cleaned = _normalize_indentation(cleaned)
     
     full = sig + "\n" + cleaned
 
-    # AST Auto-indentation fix for unindented loop/if block bodies
+    # Final AST validation pass — try progressively stronger fixes
     if not is_valid_python(full):
-        fixed_lines = []
-        in_colon_block = False
-        for ln in full.splitlines():
-            if in_colon_block and ln.strip() and not ln.startswith("    "):
-                fixed_lines.append("    " + ln.strip())
-                in_colon_block = False
-            else:
-                fixed_lines.append(ln)
-                if ln.strip().endswith(":"):
-                    in_colon_block = True
-        candidate_fixed = "\n".join(fixed_lines)
-        if is_valid_python(candidate_fixed):
-            full = candidate_fixed
+        candidate = _ast_indent_repair(full)
+        if candidate and is_valid_python(candidate):
+            full = candidate
+
+    # Brute-force dedent fallback: if still invalid, try dedenting all
+    # non-docstring body lines by 4 until it parses (max 3 iterations)
+    if not is_valid_python(full):
+        body_lines = full.split("\n")
+        for _ in range(3):
+            new_lines = [body_lines[0]]  # keep def line
+            in_ds = False
+            for ln in body_lines[1:]:
+                s = ln.strip()
+                if s in ('"""', "'''"):
+                    in_ds = not in_ds
+                    new_lines.append(ln)
+                elif in_ds:
+                    new_lines.append(ln)
+                else:
+                    spaces = len(ln) - len(ln.lstrip())
+                    if spaces >= 8 and s:
+                        new_lines.append(" " * (spaces - 4) + s)
+                    else:
+                        new_lines.append(ln)
+            candidate = "\n".join(new_lines)
+            if is_valid_python(candidate):
+                full = candidate
+                break
+            body_lines = new_lines
 
     return full
+
+
+def _normalize_indentation(body: str) -> str:
+    """Normalize body indentation to standard 4-space Python style.
+    
+    Handles the two dominant patterns from CodeGen-350M:
+    1. Docstring at 8 spaces + code at 8 spaces (should be 4 + 4)
+    2. Mixed if/elif at 4/8/12 spaces (should be 4/8/8)
+    """
+    lines = body.split("\n")
+    
+    # Find the minimum non-zero indentation of non-empty lines
+    min_indent = float("inf")
+    for ln in lines:
+        stripped = ln.lstrip()
+        if stripped:
+            spaces = len(ln) - len(stripped)
+            if spaces > 0 and spaces < min_indent:
+                min_indent = spaces
+    
+    if min_indent == float("inf"):
+        min_indent = 0
+    
+    # If the minimum indent is already 4, check for common issues
+    if min_indent == 4:
+        if lines[0].strip() and not lines[0].startswith((" ", "\t")):
+            # First line unindented, rest at 4+ — just indent the first line
+            lines[0] = "    " + lines[0]
+            return "\n".join(lines)
+        # Check if code after a docstring is at 8 spaces (needs dedent)
+        in_docstring = False
+        code_after_docstring_indent = None
+        for ln in lines:
+            stripped = ln.strip()
+            if stripped in ('"""', "'''"):
+                in_docstring = not in_docstring
+                continue
+            if not in_docstring and stripped and not stripped.startswith(('"""', "'''")):
+                indent = len(ln) - len(ln.lstrip())
+                if indent >= 8:
+                    code_after_docstring_indent = indent
+                break
+        if code_after_docstring_indent and code_after_docstring_indent >= 8:
+            # Dedent code lines (not docstring lines) by 4
+            result = []
+            in_ds = False
+            for ln in lines:
+                stripped = ln.strip()
+                if stripped in ('"""', "'''"):
+                    in_ds = not in_ds
+                    result.append(ln)
+                    continue
+                if in_ds:
+                    result.append(ln)
+                else:
+                    s = ln.lstrip()
+                    if not s:
+                        result.append(ln)
+                    else:
+                        spaces = len(ln) - len(s)
+                        new_spaces = max(4, spaces - 4)
+                        result.append(" " * new_spaces + s)
+            return "\n".join(result)
+        return body
+    
+    # If minimum indent is 8 (the dominant docstring pattern), dedent everything by 4
+    if min_indent == 8:
+        result = []
+        for ln in lines:
+            stripped = ln.lstrip()
+            if not stripped:
+                result.append(ln)
+                continue
+            spaces = len(ln) - len(stripped)
+            new_spaces = max(4, spaces - 4)
+            result.append(" " * new_spaces + stripped)
+        return "\n".join(result)
+    
+    # If nothing is indented at all, add 4 spaces to everything
+    if min_indent == 0:
+        all_at_zero = all(
+            not ln.startswith((" ", "\t")) for ln in lines if ln.strip()
+        )
+        if all_at_zero:
+            return "\n".join(
+                ("    " + ln if ln.strip() else ln) for ln in lines
+            )
+        # Mixed: first line at 0, rest indented — fix first line only
+        if lines[0].strip() and not lines[0].startswith((" ", "\t")):
+            has_indented_rest = any(
+                ln.startswith((" ", "\t")) for ln in lines[1:] if ln.strip()
+            )
+            if has_indented_rest:
+                lines[0] = "    " + lines[0]
+                return "\n".join(lines)
+        return "\n".join(
+            ("    " + ln if ln.strip() else ln) for ln in lines
+        )
+    
+    # General case: dedent so minimum becomes 4
+    shift = 4 - min_indent
+    result = []
+    for ln in lines:
+        stripped = ln.lstrip()
+        if not stripped:
+            result.append(ln)
+            continue
+        spaces = len(ln) - len(stripped)
+        new_spaces = max(4, spaces + shift)
+        result.append(" " * new_spaces + stripped)
+    return "\n".join(result)
+
+
+def _ast_indent_repair(code: str) -> str | None:
+    """Try to repair indentation by re-indenting based on colon blocks."""
+    lines = code.splitlines()
+    fixed_lines = []
+    indent_stack = [0]  # Track expected indentation levels
+    
+    for ln in lines:
+        stripped = ln.strip()
+        if not stripped:
+            fixed_lines.append("")
+            continue
+        
+        current_indent = len(ln) - len(ln.lstrip())
+        
+        # Keywords that reduce indent level
+        if stripped.startswith(("elif ", "else:", "except ", "except:", "finally:")):
+            if len(indent_stack) > 1:
+                expected = indent_stack[-2] + 4
+            else:
+                expected = indent_stack[-1]
+            fixed_lines.append(" " * expected + stripped)
+            if stripped.endswith(":"):
+                if len(indent_stack) > 0 and indent_stack[-1] != expected:
+                    indent_stack[-1] = expected
+        elif stripped.startswith(("return ", "return\n", "pass", "break", "continue", "raise ")):
+            expected = indent_stack[-1] + 4 if indent_stack else 4
+            fixed_lines.append(" " * expected + stripped)
+        else:
+            if current_indent == 0 and stripped.startswith("def "):
+                fixed_lines.append(stripped)
+                indent_stack = [0]
+            else:
+                fixed_lines.append(ln)
+            
+            if stripped.endswith(":"):
+                indent_stack.append(current_indent)
+    
+    candidate = "\n".join(fixed_lines)
+    return candidate if candidate != code else None
 
 
 def simplify_ast_expressions(code: str) -> str:
@@ -1677,67 +1857,75 @@ def docstring_from_ast(code: str) -> Optional[str]:
     return "\n".join(lines)
 
 
-def generate_docstring(model, code: str, max_new_tokens: int = 120, temperature: float = 0.0, few_shot: bool = False) -> str:
+def generate_docstring(model, code: str, max_new_tokens: int = 256, temperature: float = 0.2, few_shot: bool = False) -> str:
     try:
         tree = ast.parse(code)
         fn = next((n for n in tree.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))), None)
     except Exception:
         fn = None
 
-    summary = ""
-    if fn:
-        existing_doc = ast.get_docstring(fn)
-        if existing_doc:
-            summary = existing_doc.split("\n")[0].strip().rstrip(".")
-
-    if not summary:
-        few_shot_prompt = (
-            '"""\n'
-            'Write a one-sentence summary for the following function:\n'
-            'def add(a, b):\n'
-            '    return a + b\n'
-            '"""\n'
-            '# Summary: Adds two numbers and returns their sum.\n\n'
-            '"""\n'
-            'Write a one-sentence summary for the following function:\n'
-            'def is_even(n):\n'
-            '    return n % 2 == 0\n'
-            '"""\n'
-            '# Summary: Checks if a given integer is even.\n\n'
-            '"""\n'
-            f'Write a one-sentence summary for the following function:\n'
-            f'{code.strip()}\n'
-            '"""\n'
-            '# Summary:'
+    if isinstance(model, ModelBackend) and model.prompt_style == "chat":
+        sys_prompt = (
+            "You are a senior software engineer. Write a professional, comprehensive Google-style Python docstring for the provided function.\n"
+            "Rules:\n"
+            "1. Do NOT use generic placeholder text like 'The parameter' or 'Computed result'.\n"
+            "2. Describe what each parameter contains, expected types, and edge cases.\n"
+            "3. Fully explain what the return value represents and what is returned for edge cases.\n"
+            "4. Include a brief example in doctest format.\n"
+            "Format the output as a standard Python docstring enclosed in triple double quotes \"\"\", with proper newlines and indentation inside the function."
         )
-        raw = generate_code(model, few_shot_prompt, max_new_tokens=max_new_tokens, temperature=temperature, stop=False)[0]
-        summary = raw.split("\n")[0].strip().rstrip(".")
+        user_prompt = f"Write a complete Google-style docstring for this code:\n\n{code.strip()}"
+        raw = generate_code(model, user_prompt, max_new_tokens=max_new_tokens, temperature=temperature, stop=False, system_prompt=sys_prompt)[0]
+        doc = extract_code_block(raw)
+        if not (doc.startswith('"""') or doc.startswith("'''")):
+            doc = f'"""\n{doc}\n"""'
+        return doc
 
-    if not summary or summary.startswith("Write a") or "following function" in summary:
+    # Completion model fallback (using CodeGen)
+    few_shot_prompt = (
+        '# Write a comprehensive Google-style docstring for the following function.\n'
+        '# Rules:\n'
+        '# 1. Do NOT use generic placeholder text like "The parameter" or "Computed result".\n'
+        '# 2. Describe what each parameter contains, expected types, and edge cases.\n'
+        '# 3. Fully explain what the return value represents and what is returned for edge cases.\n'
+        '# 4. Include a brief example in doctest format.\n\n'
+        'def add(a: int, b: int) -> int:\n'
+        '    return a + b\n'
+        '"""\n'
+        'Adds two integers and returns the sum.\n\n'
+        'Args:\n'
+        '    a (int): The first integer to add.\n'
+        '    b (int): The second integer to add.\n\n'
+        'Returns:\n'
+        '    int: The arithmetic sum of a and b.\n\n'
+        'Example:\n'
+        '    >>> add(3, 5)\n'
+        '    8\n'
+        '"""\n\n'
+        '# Write a comprehensive Google-style docstring for the following function.\n'
+        f'{code.strip()}\n'
+        '"""\n'
+    )
+    raw = generate_code(model, few_shot_prompt, max_new_tokens=max_new_tokens, temperature=temperature, stop=False)[0]
+    doc = raw.strip()
+    if '"""' in doc:
+        doc = doc.split('"""')[0].strip()
+    elif "'''" in doc:
+        doc = doc.split("'''")[0].strip()
+    
+    if not doc:
+        summary = f"Compute {fn.name.replace('_', ' ')}." if fn else "Executes the function logic."
+        lines = [summary, ""]
         if fn:
-            summary = f"Compute {fn.name.replace('_', ' ')}."
-        else:
-            summary = "Executes the function logic."
-    else:
-        summary = summary + "."
-
-    lines = [summary, ""]
-    if fn:
-        args = [a.arg for a in list(fn.args.posonlyargs) + list(fn.args.args) if a.arg not in ("self", "cls")]
-        if args:
-            lines.append("Args:")
-            for a in args:
-                desc = f"The `{a}` parameter."
-                if a in ("s", "text", "string"):
-                    desc = f"The input string `{a}`."
-                elif a in ("n", "num", "val", "x", "y", "limit"):
-                    desc = f"The input number/value `{a}`."
-                elif a in ("arr", "lst", "nums", "items"):
-                    desc = f"The list/array `{a}`."
-                lines.append(f"    {a}: {desc}")
-            lines.append("")
-        lines.append("Returns:\n    Computed result.")
-    return "\n".join(lines)
+            args = [a.arg for a in list(fn.args.posonlyargs) + list(fn.args.args) if a.arg not in ("self", "cls")]
+            if args:
+                lines.append("Args:")
+                for a in args:
+                    lines.append(f"    {a}: The input value `{a}`.")
+            lines.append("\nReturns:\n    Computed result.")
+        doc = "\n".join(lines)
+        
+    return doc
 
 
 LANG_LABELS = {"python": "Python", "java": "Java", "javascript": "JavaScript", "typescript": "TypeScript", "cpp": "C++", "go": "Go", "rust": "Rust"}
@@ -1780,7 +1968,8 @@ def translate_code(code: str, source_lang: str = "python", target_lang: str = "j
     else:
         prompt = f"# Translate {src} code to {tgt}.\n# {src}:\n{code.rstrip()}\n# {tgt}:\n"
 
-    raw = generate_code(model, prompt, max_new_tokens=max_new_tokens, temperature=temperature, stop=False)[0]
+    sys_prompt = f"You are a professional code translator. Translate the given {src} code into idiomatic, syntactically correct {tgt} code. Output ONLY valid {tgt} code inside a clean code block without explanation or markdown formatting."
+    raw = generate_code(model, prompt, max_new_tokens=max_new_tokens, temperature=temperature, stop=False, system_prompt=sys_prompt)[0]
     
     # Post-process to truncate translation when it starts generating next templates or comment headers
     cleaned_lines = []
@@ -1790,6 +1979,7 @@ def translate_code(code: str, source_lang: str = "python", target_lang: str = "j
             break
         cleaned_lines.append(line)
     output = "\n".join(cleaned_lines).strip()
+    output = extract_code_block(output)
 
     return {"output": output, "source_lang": source_lang, "target_lang": target_lang, "status": f"Translated {src} → {tgt}"}
 
