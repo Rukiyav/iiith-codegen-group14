@@ -1297,10 +1297,17 @@ def get_index(project_dir: str | Path | None = None, *, force_rebuild: bool = Fa
     if project_dir:
         key = str(Path(project_dir).expanduser().resolve())
         if force_rebuild or key not in _cached_projects:
-            _cached_projects[key] = build_project_index(key, force=force_rebuild)
+            try:
+                _cached_projects[key] = build_project_index(key, force=force_rebuild)
+            except Exception:
+                _cached_projects[key] = (None, [], None)
         return _cached_projects[key]
     if force_rebuild or _cached_default is None:
-        _cached_default = build_index(force=force_rebuild)
+        try:
+            _cached_default = build_index(force=force_rebuild)
+        except Exception as e:
+            _cached_default = (None, [], None)
+            raise e
     return _cached_default
 
 
@@ -1313,6 +1320,8 @@ def retrieve(
     min_score: float = 0.35,
 ) -> List[dict]:
     index, all_chunks, st_model = get_index(project_dir, force_rebuild=force_rebuild)
+    if index is None or st_model is None:
+        return []
     q_emb = st_model.encode([query], normalize_embeddings=True, convert_to_numpy=True, show_progress_bar=False)
     q_emb = np.ascontiguousarray(q_emb, dtype=np.float32)
     scores, idxs = index.search(q_emb, top_k)
@@ -1349,13 +1358,18 @@ def format_context(hits: List[dict], max_chars: int = 1800, header: str = "# Rel
     return "\n".join(lines) + "\n"
 
 
+_rag_warned = False
+
 def build_rag_prefix(query: str, *, project_dir: str | Path | None = None, top_k: int = 3, max_chars: int = 1800, force_rebuild: bool = False, min_score: Optional[float] = None) -> str:
     cutoff = min_score if min_score is not None else (0.35 if project_dir else 0.45)
     try:
         hits = retrieve(query, top_k=top_k, project_dir=project_dir, force_rebuild=force_rebuild, min_score=cutoff)
     except Exception as e:
-        import logging
-        logging.warning("RAG prefix retrieval failed: %s", e)
+        global _rag_warned
+        if not _rag_warned:
+            import logging
+            logging.warning("RAG prefix retrieval failed: %s (subsequent retrieval warnings will be silenced)", e)
+            _rag_warned = True
         return ""
     if not hits:
         return ""

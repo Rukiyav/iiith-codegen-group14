@@ -58,7 +58,7 @@ MODEL_REGISTRY = {
         "name": "CodeGen-350M LoRA",
         "adapter": {
             "type": "peft_lora",
-            "path": LORA_DIR,
+            "path": str(LORA_DIR),
         },
         "supports_docs": True,
         "supports_translation": True,
