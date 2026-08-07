@@ -943,8 +943,23 @@ def is_valid_python(code: str) -> bool:
         return False
 
 
+def extract_code_block(raw: str) -> str:
+    m = re.search(r"```(?:python)?\s*\n(.*?)```", raw, re.DOTALL | re.IGNORECASE)
+    if m:
+        return m.group(1).strip()
+    m2 = re.search(r"```(.*?)```", raw, re.DOTALL)
+    if m2:
+        return m2.group(1).strip()
+    if "def " in raw:
+        idx = raw.index("def ")
+        pre = raw[:idx].strip()
+        if pre and not pre.startswith("class ") and not pre.startswith("import ") and not pre.startswith("from "):
+            return raw[idx:].strip()
+    return raw.strip()
+
+
 def clean_body(sig: str, raw: str) -> str:
-    text = raw
+    text = extract_code_block(raw)
     if text.lstrip().startswith("def "):
         nl = text.find("\n")
         text = text[nl + 1 :] if nl != -1 else ""

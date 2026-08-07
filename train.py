@@ -80,8 +80,10 @@ class CodeSFTDataset(Dataset):
             prompt = ex.get("prompt", "")
             code = ex.get("code", "")
             if prompt and code:
-                prefix = f'"""\n{prompt.strip()}\n"""\n'
-                self.items.append((prefix, code))
+                code_ids = self.tokenizer(code, add_special_tokens=False)["input_ids"]
+                if len(code_ids) < self.max_length - 30:
+                    prefix = f'"""\n{prompt.strip()}\n"""\n'
+                    self.items.append((prefix, code))
 
     def __len__(self):
         return len(self.items)
@@ -216,10 +218,25 @@ def train_lora(
         rng = random.Random(42)
         rng.shuffle(apps_interview)
 
-    # 3. Mix Intro and Interview samples based on target ratio and caps
+    # 3. Split APPS datasets 90/10 into train/validation
+    val_intro = []
+    train_intro = apps_intro
+    if apps_intro:
+        split_idx = int(len(apps_intro) * 0.9)
+        val_intro = apps_intro[split_idx:]
+        train_intro = apps_intro[:split_idx]
+        
+    val_interview = []
+    train_interview = apps_interview
+    if apps_interview:
+        split_idx = int(len(apps_interview) * 0.9)
+        val_interview = apps_interview[split_idx:]
+        train_interview = apps_interview[:split_idx]
+
+    # 4. Mix Intro and Interview samples based on target ratio and caps
     target_apps_count = int(len(train_ex) * LORA_APPS_RATIO / (1.0 - LORA_APPS_RATIO))
-    selected_intro = apps_intro[:min(LORA_APPS_MAX, len(apps_intro))]
-    selected_interview = apps_interview[:min(LORA_APPS_INTERVIEW_MAX, len(apps_interview))]
+    selected_intro = train_intro[:min(LORA_APPS_MAX, len(train_intro))]
+    selected_interview = train_interview[:min(LORA_APPS_INTERVIEW_MAX, len(train_interview))]
     
     mixed_apps = selected_intro + selected_interview
     if len(mixed_apps) > target_apps_count:
@@ -231,11 +248,21 @@ def train_lora(
         selected_interview = selected_interview[:interview_budget]
         mixed_apps = selected_intro + selected_interview
 
+    # Hold out corresponding validation samples proportionally (10% of selected train size)
+    val_intro_count = max(1, int(len(selected_intro) * 0.1)) if selected_intro else 0
+    val_interview_count = max(1, int(len(selected_interview) * 0.1)) if selected_interview else 0
+    val_apps_mixed = val_intro[:val_intro_count] + val_interview[:val_interview_count]
+
     if mixed_apps:
         train_ex = train_ex + mixed_apps
         rng = random.Random(42)
         rng.shuffle(train_ex)
-        print(f"Mixed in {len(selected_intro)} APPS Intro and {len(selected_interview)} APPS Interview samples (target ratio: {LORA_APPS_RATIO:.2f})")
+        print(f"Mixed in {len(selected_intro)} APPS Intro and {len(selected_interview)} APPS Interview training samples (target ratio: {LORA_APPS_RATIO:.2f})")
+        
+        if val_apps_mixed:
+            val_ex = val_ex + val_apps_mixed
+            rng.shuffle(val_ex)
+            print(f"Mixed in {len(val_apps_mixed)} APPS validation samples ({val_intro_count} Intro, {val_interview_count} Interview)")
     else:
         print("No APPS introductory or interview examples found to mix in.")
 

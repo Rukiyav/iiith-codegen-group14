@@ -441,3 +441,23 @@ def test_end_to_end_regression(mock_tokenizer, mock_model):
          assert res_b.passed is True
          assert "solve" in res_b.code
          assert res_b.attempts == 1
+
+
+def test_extract_code_block():
+    from src.engine import extract_code_block
+    
+    # 1. Fenced markdown block
+    raw_markdown = "Here is the code:\n```python\ndef solve(x):\n    return x\n```\nHope this helps!"
+    assert extract_code_block(raw_markdown) == "def solve(x):\n    return x"
+    
+    # 2. Plain fenced markdown block (no python tag)
+    raw_plain_markdown = "```\ndef solve(x):\n    return x\n```"
+    assert extract_code_block(raw_plain_markdown) == "def solve(x):\n    return x"
+    
+    # 3. Leading prose without fences
+    raw_prose = "Here is the code:\n\ndef solve(x):\n    return x"
+    assert extract_code_block(raw_prose) == "def solve(x):\n    return x"
+    
+    # 4. Continuation block (CodeGen style - no "def ")
+    raw_continuation = "    return x"
+    assert extract_code_block(raw_continuation) == "    return x"
