@@ -1791,22 +1791,43 @@ def self_correct(
             logging.warning("RAG retrieval failed inside self_correct: %s", e)
 
     freeform = build_freeform_prompt(task, sig, few_shot=True)
-    cands = generate_code(
+    prompt = rag + freeform if rag else freeform
+
+    # 1. Always evaluate deterministic greedy decoding first (temperature=0.0)
+    greedy_cands = generate_code(
         model,
-        rag + freeform if rag else freeform,
+        prompt,
         max_new_tokens=max_new_tokens,
-        temperature=max(temperature, 0.4) if n_candidates > 1 else temperature,
-        num_samples=max(1, n_candidates),
+        temperature=0.0,
+        num_samples=1,
     )
-    for c in cands:
-        code = clean_body(sig, c)
-        if use_rag:
-            code = resolve_rag_dependencies(code, hits)
-        res = execute_with_tests(code, test_list, test_imports, project_dir=str(project) if project else None)
-        res.code = code
-        history.append(res)
-        if res.passed:
-            return code, history, res
+    code = clean_body(sig, greedy_cands[0])
+    if use_rag:
+        code = resolve_rag_dependencies(code, hits)
+    res = execute_with_tests(code, test_list, test_imports, project_dir=str(project) if project else None)
+    res.code = code
+    history.append(res)
+    if res.passed:
+        return code, history, res
+
+    # 2. If greedy decoding failed, evaluate additional sampled candidates if requested
+    if n_candidates > 1:
+        sampled_cands = generate_code(
+            model,
+            prompt,
+            max_new_tokens=max_new_tokens,
+            temperature=max(temperature, 0.4),
+            num_samples=n_candidates - 1,
+        )
+        for c in sampled_cands:
+            code = clean_body(sig, c)
+            if use_rag:
+                code = resolve_rag_dependencies(code, hits)
+            res = execute_with_tests(code, test_list, test_imports, project_dir=str(project) if project else None)
+            res.code = code
+            history.append(res)
+            if res.passed:
+                return code, history, res
 
     for attempt in range(1, max_retries + 1):
         best_cand = get_best_candidate(history)
@@ -1827,7 +1848,8 @@ def self_correct(
         repair_prompt = (
             f"{rag}{refl_block}"
             f"# The following solution failed ({best_cand.error_type}).\n# Error:\n# {err}\n"
-            f"# Tests:\n{tests_prev}\n# Broken code:\n{best_cand.code}\n"
+            f"# Tests:\n{tests_prev}\n"
+            f"# Instruction: Write a clean, complete function using standard loops/conditionals. Do NOT write single-line returns using max(), min(), or 'or' fallbacks.\n"
             f"# Corrected complete function:\n"
             f"{clean_task_prompt}"
         )
