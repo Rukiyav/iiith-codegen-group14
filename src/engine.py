@@ -128,15 +128,16 @@ class HuggingFaceBackend(ModelBackend):
         device = get_generation_device()
         inputs = self.tokenizer(formatted_prompt, return_tensors="pt").to(device)
         in_len = inputs["input_ids"].shape[1]
-        sc = StoppingCriteriaList([StopAtNewDef(self.tokenizer)]) if stop else None
+        sc = StoppingCriteriaList([StopAtNewDef(self.tokenizer)]) if (stop and self.prompt_style != "chat") else None
         do_sample = temperature > 0
         gen_kwargs = dict(
             max_new_tokens=max_new_tokens,
             do_sample=do_sample,
             num_return_sequences=num_samples,
             pad_token_id=self.tokenizer.eos_token_id,
-            stopping_criteria=sc,
         )
+        if sc:
+            gen_kwargs["stopping_criteria"] = sc
         if do_sample:
             gen_kwargs["temperature"] = temperature
             gen_kwargs["top_p"] = top_p
@@ -145,7 +146,7 @@ class HuggingFaceBackend(ModelBackend):
             out = self.model.generate(**inputs, **gen_kwargs)
             
         raw_cands = [self.tokenizer.decode(seq[in_len:], skip_special_tokens=True) for seq in out]
-        if stop:
+        if stop and self.prompt_style != "chat":
             return [truncate_at_stop(c) for c in raw_cands]
         return raw_cands
 
@@ -362,6 +363,8 @@ class StopAtNewDef(StoppingCriteria):
 
 
 def truncate_at_stop(text: str, stop_words: Sequence[str] = ("\ndef ", "\nclass ", "\nif __name__")) -> str:
+    if not isinstance(text, str):
+        text = str(text)
     earliest = len(text)
     for w in stop_words:
         pos = text.find(w)
@@ -672,7 +675,7 @@ def normalize_leetcode_signature(sig: str) -> str:
 import keyword
 
 GENERAL_STOP_WORDS = {
-    "write", "given", "return", "returns", "returning", "implement", "calculate",
+    "write", "given", "return", "returns", "returning", "implement", "calculate", "find", "search", "get", "compute",
     "that", "to", "which", "a", "an", "the", "for", "in", "is", "should",
     "can", "will", "with", "takes", "accepts", "checks", "check", "function", "method",
     "python", "program", "code", "algorithm", "solution", "whether", "either", "each",
@@ -733,7 +736,14 @@ def infer_signature(task: str) -> str:
             if any(o not in ("true", "false") for o in outputs):
                 is_bool = False
         prefix = "is_" if is_bool and not words[0].startswith(("is_", "has_", "can_")) else ""
-        name = prefix + "_".join(words[:2])
+        n_words = 3 if (
+            len(words) >= 3 and words[2].lower() in (
+                "prefix", "suffix", "substring", "subsequence", "element", "elements",
+                "number", "numbers", "node", "nodes", "pair", "pairs", "list", "lists",
+                "array", "arrays", "positive", "negative", "common", "sequence"
+            )
+        ) else 2
+        name = prefix + "_".join(words[:n_words])
         name = _snake(name)
         return f"def {name}{guessed_args or _guess_args(lower)}:"
 
@@ -1021,7 +1031,34 @@ def clean_body(sig: str, raw: str) -> str:
                 break
             body_lines = new_lines
 
+    # If model provided a complete valid function with a different name than sig,
+    # generate a clean delegation alias instead of mangling the original function header
+    if not is_valid_python(full):
+        if is_valid_python(text):
+            full = _add_signature_alias_if_needed(text, sig)
+
+    full = _add_signature_alias_if_needed(full, sig)
     return full
+
+
+def _add_signature_alias_if_needed(code: str, sig: str) -> str:
+    m_sig = re.match(r"\s*def\s+([a-zA-Z_]\w*)\s*\(", sig)
+    if not m_sig:
+        return code
+    sig_name = m_sig.group(1)
+    
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return code
+        
+    defined_fns = [n.name for n in tree.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
+    if sig_name in defined_fns or not defined_fns:
+        return code
+        
+    primary_fn = defined_fns[0]
+    alias_code = f"\n\ndef {sig_name}(*args, **kwargs):\n    return {primary_fn}(*args, **kwargs)\n"
+    return code.strip() + alias_code
 
 
 def _normalize_indentation(body: str) -> str:
@@ -1857,7 +1894,56 @@ def docstring_from_ast(code: str) -> Optional[str]:
     return "\n".join(lines)
 
 
-def generate_docstring(model, code: str, max_new_tokens: int = 256, temperature: float = 0.2, few_shot: bool = False) -> str:
+def clean_google_docstring(raw_doc: str) -> str:
+    """Clean, format, and normalize a raw docstring into standard Google-style format."""
+    doc = raw_doc.strip()
+    
+    # Strip fence wrappers if model returned them
+    if doc.startswith("```"):
+        lines = doc.splitlines()
+        if lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].startswith("```"):
+            lines = lines[:-1]
+        doc = "\n".join(lines).strip()
+        
+    # Strip leading/trailing triple quotes
+    if doc.startswith('"""') and doc.endswith('"""') and len(doc) >= 6:
+        doc = doc[3:-3].strip()
+    elif doc.startswith("'''") and doc.endswith("'''") and len(doc) >= 6:
+        doc = doc[3:-3].strip()
+        
+    # Replace non-standard section headers
+    doc = re.sub(r'^(Parameters|Params|Arguments):\s*$', 'Args:', doc, flags=re.MULTILINE | re.IGNORECASE)
+    doc = re.sub(r'^(Return|Return Value):\s*$', 'Returns:', doc, flags=re.MULTILINE | re.IGNORECASE)
+    doc = re.sub(r'^(Example|Usage):\s*$', 'Examples:', doc, flags=re.MULTILINE | re.IGNORECASE)
+    
+    lines = doc.splitlines()
+    formatted = []
+    current_section = None
+    
+    for line in lines:
+        stripped = line.strip()
+        if stripped in ("Args:", "Returns:", "Raises:", "Examples:"):
+            current_section = stripped.rstrip(":")
+            if formatted and formatted[-1] != "":
+                formatted.append("")
+            formatted.append(f"{current_section}:")
+            continue
+            
+        if current_section and stripped:
+            if not line.startswith("    "):
+                formatted.append("    " + stripped)
+            else:
+                formatted.append(line.rstrip())
+        else:
+            formatted.append(line.rstrip())
+            
+    res = "\n".join(formatted).strip()
+    return f'"""\n{res}\n"""'
+
+
+def generate_docstring(model, code: str, max_new_tokens: int = 384, temperature: float = 0.2, few_shot: bool = False) -> str:
     try:
         tree = ast.parse(code)
         fn = next((n for n in tree.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))), None)
@@ -1866,43 +1952,56 @@ def generate_docstring(model, code: str, max_new_tokens: int = 256, temperature:
 
     if isinstance(model, ModelBackend) and model.prompt_style == "chat":
         sys_prompt = (
-            "You are a senior software engineer. Write a professional, comprehensive Google-style Python docstring for the provided function.\n"
-            "Rules:\n"
-            "1. Do NOT use generic placeholder text like 'The parameter' or 'Computed result'.\n"
-            "2. Describe what each parameter contains, expected types, and edge cases.\n"
-            "3. Fully explain what the return value represents and what is returned for edge cases.\n"
-            "4. Include a brief example in doctest format.\n"
-            "Format the output as a standard Python docstring enclosed in triple double quotes \"\"\", with proper newlines and indentation inside the function."
+            "You are a principal software architect. Generate an exceptionally thorough, detailed, and beautifully formatted Google-style Python docstring for the provided function.\n\n"
+            "Strict Guidelines:\n"
+            "1. Summary Line: Single concise sentence explaining what the function accomplishes.\n"
+            "2. Detailed Explanation: Multi-sentence paragraph explaining the algorithm, step-by-step logic, handling of empty/null inputs, boundary conditions, and performance characteristics.\n"
+            "3. Args: Section header 'Args:'. List each parameter as 'name (type): Detailed description including expected range, types, and edge-case behavior.'\n"
+            "4. Returns: Section header 'Returns:'. Format as 'type: Comprehensive description of return value and edge-case returns.'\n"
+            "5. Examples: Section header 'Examples:'. Include 2-3 doctests ('>>> function_call') demonstrating typical usage, empty inputs, and edge cases.\n\n"
+            "CRITICAL: Always use 'Args:' (NEVER 'Parameters:'). Indent descriptions by 4 spaces under section headers. Output ONLY the docstring inside triple double quotes \"\"\"."
         )
-        user_prompt = f"Write a complete Google-style docstring for this code:\n\n{code.strip()}"
+        user_prompt = f"Write an exhaustive, beautifully formatted Google-style docstring for this code:\n\n{code.strip()}"
         raw = generate_code(model, user_prompt, max_new_tokens=max_new_tokens, temperature=temperature, stop=False, system_prompt=sys_prompt)[0]
-        doc = extract_code_block(raw)
-        if not (doc.startswith('"""') or doc.startswith("'''")):
-            doc = f'"""\n{doc}\n"""'
-        return doc
+        return clean_google_docstring(raw)
 
     # Completion model fallback (using CodeGen)
     few_shot_prompt = (
-        '# Write a comprehensive Google-style docstring for the following function.\n'
+        '# Write an exhaustive, beautifully formatted Google-style Python docstring.\n'
         '# Rules:\n'
-        '# 1. Do NOT use generic placeholder text like "The parameter" or "Computed result".\n'
-        '# 2. Describe what each parameter contains, expected types, and edge cases.\n'
-        '# 3. Fully explain what the return value represents and what is returned for edge cases.\n'
-        '# 4. Include a brief example in doctest format.\n\n'
-        'def add(a: int, b: int) -> int:\n'
-        '    return a + b\n'
+        '# 1. Summary sentence followed by a detailed multi-sentence explanation paragraph.\n'
+        '# 2. Use "Args:" (NOT "Parameters:") with 4-space indent for parameter descriptions.\n'
+        '# 3. Use "Returns:" with 4-space indent for return value description.\n'
+        '# 4. Use "Examples:" with 4-space indented doctest syntax (>>>).\n\n'
+        'def longest_common_prefix(strs: list[str]) -> str:\n'
+        '    if not strs:\n'
+        '        return ""\n'
+        '    prefix = strs[0]\n'
+        '    for s in strs[1:]:\n'
+        '        while not s.startswith(prefix):\n'
+        '            prefix = prefix[:-1]\n'
+        '            if not prefix:\n'
+        '                return ""\n'
+        '    return prefix\n'
         '"""\n'
-        'Adds two integers and returns the sum.\n\n'
+        'Find the longest common prefix among a list of strings.\n\n'
+        'Iterates through the provided list of strings, progressively shortening the prefix\n'
+        'until a common matching substring is found across all elements. Handles empty lists,\n'
+        'empty strings, and cases with no overlapping prefix.\n\n'
         'Args:\n'
-        '    a (int): The first integer to add.\n'
-        '    b (int): The second integer to add.\n\n'
+        '    strs (list[str]): A list of input strings to search for a common prefix.\n'
+        '        Must contain valid string instances. An empty list or list with empty strings\n'
+        '        will yield an empty string result.\n\n'
         'Returns:\n'
-        '    int: The arithmetic sum of a and b.\n\n'
-        'Example:\n'
-        '    >>> add(3, 5)\n'
-        '    8\n'
+        '    str: The longest shared prefix among all strings in the list. Returns an empty\n'
+        '        string ("") if `strs` is empty or if no common prefix exists.\n\n'
+        'Examples:\n'
+        '    >>> longest_common_prefix(["flower", "flow", "flight"])\n'
+        '    \'fl\'\n'
+        '    >>> longest_common_prefix(["dog", "racecar", "car"])\n'
+        '    \'\'\n'
         '"""\n\n'
-        '# Write a comprehensive Google-style docstring for the following function.\n'
+        '# Write an exhaustive, beautifully formatted Google-style docstring for the following function.\n'
         f'{code.strip()}\n'
         '"""\n'
     )
@@ -1914,18 +2013,9 @@ def generate_docstring(model, code: str, max_new_tokens: int = 256, temperature:
         doc = doc.split("'''")[0].strip()
     
     if not doc:
-        summary = f"Compute {fn.name.replace('_', ' ')}." if fn else "Executes the function logic."
-        lines = [summary, ""]
-        if fn:
-            args = [a.arg for a in list(fn.args.posonlyargs) + list(fn.args.args) if a.arg not in ("self", "cls")]
-            if args:
-                lines.append("Args:")
-                for a in args:
-                    lines.append(f"    {a}: The input value `{a}`.")
-            lines.append("\nReturns:\n    Computed result.")
-        doc = "\n".join(lines)
+        doc = docstring_from_ast(code) or "Compute result."
         
-    return doc
+    return clean_google_docstring(doc)
 
 
 LANG_LABELS = {"python": "Python", "java": "Java", "javascript": "JavaScript", "typescript": "TypeScript", "cpp": "C++", "go": "Go", "rust": "Rust"}
